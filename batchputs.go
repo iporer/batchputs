@@ -81,7 +81,7 @@ func CollectChangePutWithMaxSQLParamsCount(
 	}
 
 	pkIndex := primaryKeyIndex(columns, primaryKeyColumn)
-	if pkIndex < 0 {
+	if pkIndex < 0 && len(primaryKeyColumn) > 0 {
 		err = fmt.Errorf("primary key column %+v must exists in columns %+v", primaryKeyColumn, columns)
 		return
 	}
@@ -111,45 +111,56 @@ func CollectChangePutWithMaxSQLParamsCount(
 		if Verbose {
 			log.Printf("batchputs: in batch size: %#+v, max_sql_params_count: %d\n", len(bRows), max)
 		}
-		var priVals = primaryValues(pkIndex, bRows)
-		allColumns, allColumnRows, changedPriVals, err1 := changedRows(sqb, db, tableName, columns, bRows, primaryKeyColumn, priVals)
-		if err1 != nil {
-			err = err1
-			return
-		}
-
-		if len(allColumnRows) == 0 {
-			continue
-		}
-
-		if len(changedPriVals) > 0 {
-			deletes := sqb.Delete(tableName).Where(sq.Eq{primaryKeyColumn: changedPriVals})
-			if Verbose {
-				deletesSQL, deletesArgs, _ := deletes.ToSql()
-				log.Println(deletesSQL, deletesArgs)
+		if pkIndex >= 0 {
+			var priVals = primaryValues(pkIndex, bRows)
+			allColumns, allColumnRows, changedPriVals, err1 := changedRows(sqb, db, tableName, columns, bRows, primaryKeyColumn, priVals)
+			if err1 != nil {
+				err = err1
+				return
 			}
 
-			_, err = deletes.RunWith(db).Exec()
+			if len(allColumnRows) == 0 {
+				continue
+			}
+
+			if len(changedPriVals) > 0 {
+				deletes := sqb.Delete(tableName).Where(sq.Eq{primaryKeyColumn: changedPriVals})
+				if Verbose {
+					deletesSQL, deletesArgs, _ := deletes.ToSql()
+					log.Println(deletesSQL, deletesArgs)
+				}
+
+				_, err = deletes.RunWith(db).Exec()
+				if err != nil {
+					return
+				}
+			}
+			inserts := sqb.Insert(tableName).Columns(allColumns...)
+			for _, row := range allColumnRows {
+				if rowWillChange != nil {
+					rowWillChange(row, allColumns)
+				}
+				inserts = inserts.Values(row...)
+			}
+
+			if Verbose {
+				insertsSQL, insertArgs, _ := inserts.ToSql()
+				log.Println(insertsSQL, insertArgs)
+			}
+
+			_, err = inserts.RunWith(db).Exec()
 			if err != nil {
 				return
 			}
-		}
-		inserts := sqb.Insert(tableName).Columns(allColumns...)
-		for _, row := range allColumnRows {
-			if rowWillChange != nil {
-				rowWillChange(row, allColumns)
+		} else {
+			inserts := sqb.Insert(tableName).Columns(columns...)
+			for _, row := range bRows {
+				inserts = inserts.Values(row...)
 			}
-			inserts = inserts.Values(row...)
-		}
-
-		if Verbose {
-			insertsSQL, insertArgs, _ := inserts.ToSql()
-			log.Println(insertsSQL, insertArgs)
-		}
-
-		_, err = inserts.RunWith(db).Exec()
-		if err != nil {
-			return
+			_, err = inserts.RunWith(db).Exec()
+			if err != nil {
+				return
+			}
 		}
 	}
 
